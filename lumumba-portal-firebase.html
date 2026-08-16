@@ -9,7 +9,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<!-- Firebase Storage removed: it now requires the paid "Blaze" plan for new
+     projects. Photos are instead compressed and stored as text (base64)
+     directly inside Firestore documents, which stays on the free plan. -->
 
 <!-- React (no build tools needed — Babel transforms JSX right in the browser) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -40,7 +42,6 @@
   firebase.initializeApp(firebaseConfig);
   const auth = firebase.auth();
   const db = firebase.firestore();
-  const storage = firebase.storage();
 </script>
 
 <script type="text/babel">
@@ -87,7 +88,9 @@ function weekKey() {
 }
 function regToAuthEmail(reg) { return `${slugify(reg)}${AUTH_DOMAIN_SUFFIX}`; }
 
-function compressImage(file, maxSize = 220, quality = 0.72) {
+// Returns a small base64 JPEG string (data URL) — stored directly as text
+// inside a Firestore document field, avoiding the need for Firebase Storage.
+function compressImage(file, maxSize = 160, quality = 0.6) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -99,7 +102,7 @@ function compressImage(file, maxSize = 220, quality = 0.72) {
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        canvas.toBlob(b => resolve(b), "image/jpeg", quality);
+        resolve(canvas.toDataURL("image/jpeg", quality));
       };
       img.onerror = reject;
       img.src = e.target.result;
@@ -397,15 +400,13 @@ function AuthPage({ mode, setMode, onLoggedIn }) {
   const [phone, setPhone] = useState("");
   const [pass1, setPass1] = useState("");
   const [pass2, setPass2] = useState("");
-  const [photoFile, setPhotoFile] = useState(null);
-  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoData, setPhotoData] = useState(null); // base64 data URL
   const fileRef = useRef();
 
   async function handlePhoto(e) {
     const f = e.target.files[0]; if (!f) return;
-    const blob = await compressImage(f);
-    setPhotoFile(blob);
-    setPhotoPreview(URL.createObjectURL(blob));
+    const dataUrl = await compressImage(f);
+    setPhotoData(dataUrl);
   }
 
   async function handleLogin() {
@@ -448,19 +449,12 @@ function AuthPage({ mode, setMode, onLoggedIn }) {
       const isAdminSeed = regNumber.trim().toUpperCase() === ADMIN_REG;
       const cred = await auth.createUserWithEmailAndPassword(authEmail, pass1);
 
-      let photoURL = null;
-      if (photoFile) {
-        const ref = storage.ref().child(`photos/${cred.user.uid}.jpg`);
-        await ref.put(photoFile);
-        photoURL = await ref.getDownloadURL();
-      }
-
       await db.collection("users").doc(cred.user.uid).set({
         fullName: fullName.trim(), regNumber: regNumber.trim(),
         role: isAdminSeed ? "admin" : role,
         form: role === "student" ? form : "Teacher", dob,
         email: email.trim(), phone: phone.trim(),
-        photoURL, status: isAdminSeed ? "approved" : "pending",
+        photoURL: photoData || null, status: isAdminSeed ? "approved" : "pending",
         schoolEmail: null, createdAt: Date.now(),
       });
 
@@ -470,7 +464,7 @@ function AuthPage({ mode, setMode, onLoggedIn }) {
         setMsg({ t: "ok", m: "Registered! Your account is awaiting approval from the Super Admin. You'll be able to log in once approved." });
       }
       await auth.signOut();
-      setFullName(""); setRegNumber(""); setDob(""); setEmail(""); setPhone(""); setPass1(""); setPass2(""); setPhotoFile(null); setPhotoPreview(null);
+      setFullName(""); setRegNumber(""); setDob(""); setEmail(""); setPhone(""); setPass1(""); setPass2(""); setPhotoData(null);
       if (fileRef.current) fileRef.current.value = "";
       setMode("login");
     } catch (err) {
@@ -524,7 +518,7 @@ function AuthPage({ mode, setMode, onLoggedIn }) {
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 12.5, color: "#67707f", display: "block", marginBottom: 6 }}>Passport-size photo (optional now)</label>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {photoPreview && <img src={photoPreview} alt="passport" style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", border: "1px solid #ddd" }} />}
+              {photoData && <img src={photoData} alt="passport" style={{ width: 52, height: 52, borderRadius: 8, objectFit: "cover", border: "1px solid #ddd" }} />}
               <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} style={{ fontSize: 12.5 }} />
             </div>
           </div>
@@ -549,11 +543,8 @@ function Dashboard({ session, refreshProfile, leaderboard }) {
 
   async function updatePhoto(e) {
     const f = e.target.files[0]; if (!f) return;
-    const blob = await compressImage(f);
-    const ref = storage.ref().child(`photos/${session.id}.jpg`);
-    await ref.put(blob);
-    const url = await ref.getDownloadURL();
-    await db.collection("users").doc(session.id).update({ photoURL: url });
+    const dataUrl = await compressImage(f);
+    await db.collection("users").doc(session.id).update({ photoURL: dataUrl });
     await refreshProfile();
   }
 
